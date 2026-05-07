@@ -1,81 +1,126 @@
-version: "3"
-
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   namenode:
-    image: bde2020/hadoop-namenode:2.0.0-hadoop2.7.4-java8
+    image: apache/hadoop:3.4.1
+    platform: linux/amd64
+    hostname: namenode
+    user: root
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -d /hadoop/dfs/name/current ]; then
+          chown -R hadoop:hadoop /hadoop/dfs/name
+          su hadoop -c "/opt/hadoop/bin/hdfs namenode -format -nonInteractive -force -clusterId test"
+        fi
+        chown -R hadoop:hadoop /hadoop/dfs/name
+        exec su hadoop -c "/opt/hadoop/bin/hdfs namenode"
+    environment:
+      HADOOP_HOME: /opt/hadoop
     volumes:
       - namenode:/hadoop/dfs/name
-    environment:
-      - CLUSTER_NAME=test
-    env_file:
-      - ./hadoop-hive.env
+      - ./conf/hadoop:/opt/hadoop/etc/hadoop:ro
     ports:
-      - "50070:50070"
-    
+      - "9870:9870"
+      - "8020:8020"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9870/dfshealth.html >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   datanode:
-    image: bde2020/hadoop-datanode:2.0.0-hadoop2.7.4-java8
+    image: apache/hadoop:3.4.1
+    platform: linux/amd64
+    user: root
+    command:
+      - bash
+      - -c
+      - |
+        chown -R hadoop:hadoop /hadoop/dfs/data
+        exec su hadoop -c "/opt/hadoop/bin/hdfs datanode"
+    environment:
+      HADOOP_HOME: /opt/hadoop
     volumes:
       - datanode:/hadoop/dfs/data
-    env_file:
-      - ./hadoop-hive.env
-    environment:
-      SERVICE_PRECONDITION: "namenode:50070"
+      - ./conf/hadoop:/opt/hadoop/etc/hadoop:ro
     ports:
-      - "50075:50075"
-
-  resourcemanager:
-    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop2.7.4-java8
-    environment:
-      SERVICE_PRECONDITION: "namenode:50070 datanode:50075"
-    env_file:
-      - ./hadoop-hive.env
-
-  hive-server:
-    image: bde2020/hive:2.3.2-postgresql-metastore
-    env_file:
-      - ./hadoop-hive.env
-    environment:
-      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
-      SERVICE_PRECONDITION: "hive-metastore:9083"
-    ports:
-      - "10000:10000"
+      - "9864:9864"
+    depends_on:
+      namenode:
+        condition: service_healthy
 
   hive-metastore:
-    image: bde2020/hive:2.3.2-postgresql-metastore
-    env_file:
-      - ./hadoop-hive.env
-    command: /opt/hive/bin/hive --service metastore
+    image: apache/hive:4.0.1
     environment:
-      SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432 resourcemanager:8088"
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive
+    volumes:
+      - ./jars/postgres-jdbc.jar:/opt/hive/lib/postgres-jdbc.jar:ro
+      - ./conf/hadoop:/opt/hadoop/etc/hadoop:ro
     ports:
       - "9083:9083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
 
-  hive-metastore-postgresql:
-    image: bde2020/hive-metastore-postgresql:2.3.0
-    ports:
-      - "5432:5432"
-
-  huedb:
-    image: postgres:12.1-alpine
+  hive-server:
+    image: apache/hive:4.0.1
+    environment:
+      SERVICE_NAME: hiveserver2
+      SERVICE_OPTS: -Dhive.metastore.uris=thrift://hive-metastore:9083
     volumes:
-      - pg_data:/var/lib/postgresl/data/
+      - ./conf/hadoop:/opt/hadoop/etc/hadoop:ro
     ports:
-      - "5432"
-    env_file:
-      - ./hadoop-hive.env
-    environment:
-        SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432 resourcemanager:8088 hive-metastore:9083"
-  
+      - "10000:10000"
+      - "10002:10002"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/10000 && exec 3<&-"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      hive-metastore:
+        condition: service_started
+
   hue:
-    image: gethue/hue:4.6.0
-    environment:
-        SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432 resourcemanager:8088 hive-metastore:9083 huedb:5000"
+    image: gethue/hue:4.11.0
+    platform: linux/amd64
+    volumes:
+      - ./hue-overrides.ini:/usr/share/hue/desktop/conf/hue-overrides.ini:ro
     ports:
       - "8888:8888"
-    volumes:
-      - ./hue-overrides.ini:/usr/share/hue/desktop/conf/hue-overrides.ini
-    links:
-      - huedb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hive-server:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
 
 volumes:
   namenode:
