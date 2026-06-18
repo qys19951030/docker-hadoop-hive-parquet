@@ -2,3 +2,5 @@ data/
 __pycache__/
 jars/*.jar
 .claude
+examples/*.parquet
+examples/upload_*.sh
