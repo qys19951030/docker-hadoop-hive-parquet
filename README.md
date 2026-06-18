@@ -73,87 +73,126 @@ curl -fsS http://localhost:9870/dfshealth.html >/dev/null && echo "HDFS OK"
 Then open <http://localhost:8888>, create the first Hue user (it becomes the
 admin), and you're in.
 
-## CSV → Parquet → Hive: 半自动导入链路
+## CSV -> Parquet -> Hive: Semi-automated import pipeline
 
-`parquet_converter.py` 是一个可复用的命令行工具，一站式完成：
+`parquet_converter.py` is a reusable command-line tool that handles the
+entire pipeline in one go:
 
-1. 将本地 CSV 转换为无压缩 Parquet（Hue 兼容性最好）
-2. 根据 CSV 的实际 schema 自动推断列类型
-3. 生成可直接在 Hive/Hue 中执行的 `CREATE EXTERNAL TABLE` DDL
-4. 生成 HDFS 上传脚本
+1. Converts a local CSV to **uncompressed** Parquet (best Hue compatibility)
+2. Auto-detects column types from the actual CSV schema
+3. Generates a ready-to-run `CREATE EXTERNAL TABLE` DDL for Hive/Hue
+4. Generates a cross-platform bash script to upload the Parquet to HDFS
 
-不需要手写列定义，也不需要手工在 Hue 的 File Browser 里上传。
+No more hand-copying column definitions into Hue, and no more manual uploads
+through the Hue File Browser.
 
-### 安装依赖
+### Cross-platform notes
+
+- **Console output**: On Windows terminals that don't support UTF-8 (e.g.,
+  PowerShell 5 with default code page), the tool automatically falls back to
+  ASCII characters (`OK`, `->`, `x`) instead of Unicode symbols
+  (`✓`, `→`, `×`) to avoid `UnicodeEncodeError`.
+- **Upload scripts**: The generated upload script is a bash script. On
+  Windows, run it via **Git Bash**, **WSL**, or any bash-compatible shell.
+  The script uses paths relative to its own location, so it works regardless
+  of your current working directory.
+
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 用法速览
+### Quick reference
 
 ```bash
-python parquet_converter.py \
-  -i <输入CSV> \
-  -o <输出Parquet> \
-  --table <Hive表名> \
-  --hdfs-path <HDFS目录> \
-  --ddl-output <DDL输出文件> \
-  --upload-script <上传脚本输出文件>
+python parquet_converter.py ^
+  -i <input-csv> ^
+  -o <output-parquet> ^
+  --table <hive-table-name> ^
+  --hdfs-path <hdfs-directory> ^
+  --ddl-output <ddl-output-file> ^
+  --upload-script <upload-script-output>
 ```
 
-全部参数：
+> **Note**: Use `^` for line continuation in Windows PowerShell / cmd.
+> Use `\` on Linux / macOS / WSL / Git Bash.
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `-i / --input` | ✅ | 输入 CSV 文件路径 |
-| `-o / --output` | ✅ | 输出 Parquet 文件路径 |
-| `--table` | ✅ | Hive 表名，如 `sales_data` |
-| `--hdfs-path` | ✅ | HDFS 外部表目录，如 `/user/hue/sales_data` |
-| `--ddl-output` | ❌ | DDL 输出文件路径；不填则打印到 stdout |
-| `--upload-script` | ❌ | 生成 HDFS 上传脚本（docker 命令） |
-| `--compression` | ❌ | Parquet 压缩方式：`none`(默认) / `snappy` / `gzip` / `brotli` |
-| `--csv-encoding` | ❌ | CSV 编码，默认 `utf-8` |
-| `--comment` | ❌ | 表注释 |
-| `--container` | ❌ | 执行 hdfs 命令的容器名，默认 `namenode` |
+All parameters:
 
-### 完整示例：从 CSV 到可查询的 Hive 表
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `-i / --input` | Yes | Input CSV file path |
+| `-o / --output` | Yes | Output Parquet file path |
+| `--table` | Yes | Hive table name, e.g. `sales_data` |
+| `--hdfs-path` | Yes | HDFS directory for the external table, e.g. `/user/hue/sales_data` |
+| `--ddl-output` | No | Write DDL to this file (default: print to stdout) |
+| `--upload-script` | No | Generate an HDFS upload script (.sh) |
+| `--compression` | No | Parquet compression: `none` (default) / `snappy` / `gzip` / `brotli` |
+| `--csv-encoding` | No | CSV file encoding (default: `utf-8`) |
+| `--comment` | No | Optional table comment |
+| `--container` | No | Docker container for hdfs commands (default: `namenode`) |
 
-仓库自带了一个最小样例
-[`examples/sample_sales.csv`](examples/sample_sales.csv)，
-可以拿来直接跑通全流程。
+### Full example: from CSV to queryable Hive table
 
-**第 1 步：生成 Parquet + DDL + 上传脚本**
+The repository ships with a minimal sample dataset at
+[`examples/sample_sales.csv`](examples/sample_sales.csv)
+that you can use to verify the entire pipeline end-to-end.
+
+**Step 1: Generate Parquet + DDL + upload script**
+
+Run this from the repository root:
 
 ```bash
-python parquet_converter.py \
-  -i examples/sample_sales.csv \
-  -o examples/sample_sales.parquet \
-  --table sample_sales \
-  --hdfs-path /user/hue/sample_sales \
-  --ddl-output examples/sample_sales_ddl.sql \
-  --upload-script examples/upload_sample_sales.sh \
+python parquet_converter.py ^
+  -i examples/sample_sales.csv ^
+  -o examples/sample_sales.parquet ^
+  --table sample_sales ^
+  --hdfs-path /user/hue/sample_sales ^
+  --ddl-output examples/sample_sales_ddl.sql ^
+  --upload-script examples/upload_sample_sales.sh ^
   --comment "Sample sales data for demo"
 ```
 
-输出：
+Output (Unicode on UTF-8 terminals, ASCII on Windows):
 
 ```
-[1/4] 读取 CSV: examples/sample_sales.csv
-[2/4] 转换为 Parquet: examples/sample_sales.parquet (压缩: none)
-      ✓ 完成，共 8 行 × 8 列，文件大小 5,443 字节
-[3/4] 推断 schema 并生成 Hive DDL
-      ✓ DDL 已写入: examples/sample_sales_ddl.sql
-[4/4] 生成 HDFS 上传命令
-      ✓ 上传脚本已写入: examples/upload_sample_sales.sh
+[1/4] Reading CSV: examples/sample_sales.csv
+[2/4] Converting -> Parquet: examples/sample_sales.parquet (compression: none)
+      OK done, 8 rows x 8 cols, 5,443 bytes
+[3/4] Inferring schema -> generating Hive DDL
+      OK DDL written to: examples/sample_sales_ddl.sql
+[4/4] Generating HDFS upload commands
+      OK upload script written to: examples/upload_sample_sales.sh
 
-✓ 全部完成！下一步：
-  1. 运行上传命令将 Parquet 放到 HDFS 的 /user/hue/sample_sales/
-  2. 在 Hue 中执行 examples/sample_sales_ddl.sql 中的建表语句
-  3. 查询: SELECT * FROM sample_sales LIMIT 10;
+OK All done! Next steps:
+  1. Upload the Parquet file to HDFS at /user/hue/sample_sales/
+     bash examples/upload_sample_sales.sh
+  2. Run the DDL in Hue (or Hive): examples/sample_sales_ddl.sql
+  3. Query: SELECT * FROM sample_sales LIMIT 10;
 ```
 
-**第 2 步：上传 Parquet 到 HDFS**
+> **Verification**: The exact output from the run used to generate this
+> documentation is preserved in
+> [`examples/verify_output.txt`](examples/verify_output.txt).
+
+**Step 2: Upload Parquet to HDFS**
+
+Run the generated upload script (requires bash):
+
+```bash
+bash examples/upload_sample_sales.sh
+```
+
+The script:
+- Resolves its own directory to find the Parquet file (works from any cwd)
+- Checks that the Parquet file exists
+- Copies it into the namenode container via `docker cp`
+- Creates the HDFS directory
+- Uploads the file
+- Lists the directory to verify
+
+If you prefer to run the commands manually:
 
 ```bash
 docker cp examples/sample_sales.parquet namenode:/tmp/sample_sales.parquet
@@ -162,11 +201,10 @@ docker exec namenode su hadoop -c "/opt/hadoop/bin/hdfs dfs -put /tmp/sample_sal
 docker exec namenode su hadoop -c "/opt/hadoop/bin/hdfs dfs -ls /user/hue/sample_sales"
 ```
 
-（或者直接运行 `bash examples/upload_sample_sales.sh`）
+**Step 3: Create the Hive table**
 
-**第 3 步：在 Hue 中建表**
-
-打开 `examples/sample_sales_ddl.sql`，把内容粘到 Hue 的 Hive Editor 里执行：
+Open [`examples/sample_sales_ddl.sql`](examples/sample_sales_ddl.sql)
+and paste its contents into the Hue Hive Editor, or run via `beeline`:
 
 ```sql
 CREATE EXTERNAL TABLE IF NOT EXISTS sample_sales (
@@ -185,7 +223,7 @@ LOCATION '/user/hue/sample_sales'
 ;
 ```
 
-**第 4 步：查询**
+**Step 4: Query**
 
 ```sql
 SELECT product, quantity, unit_price, quantity * unit_price AS total
@@ -195,11 +233,11 @@ ORDER BY total DESC
 LIMIT 5;
 ```
 
-### Schema 推断规则
+### Schema inference rules
 
-工具根据 pandas 推断的 dtype 映射到 Hive 类型：
+The tool maps pandas-detected dtypes to Hive types:
 
-| pandas dtype | Hive 类型 |
+| pandas dtype | Hive type |
 |--------------|-----------|
 | `int8`       | `TINYINT` |
 | `int16`      | `SMALLINT` |
@@ -211,24 +249,28 @@ LIMIT 5;
 | `datetime64` | `TIMESTAMP` |
 | `object` / `string` / `category` | `STRING` |
 
-列名会自动规范化：转小写、空格/连字符/点号换成下划线、非法字符替换、数字开头补 `col_` 前缀。
+Column names are automatically normalized: lowercased, spaces/hyphens/dots
+replaced with underscores, illegal characters replaced, and numeric-leading
+names prefixed with `col_`.
 
-### 旧的固定文件名用法仍可用
+### Legacy usage (Punctuality Statistics dataset)
 
-如果只是想快速转换
+If you just want to convert the
 [2018 UK Punctuality Statistics](https://www.kaggle.com/datasets/alenanorshtein/punctuality-statistics-full-analysis)
-数据集（放到 `data/` 目录下），可以这么用：
+dataset (drop it in `data/`), use:
 
 ```bash
-python parquet_converter.py \
-  -i data/201801_Punctuality_Statistics_Full_Analysis.csv \
-  -o data/201801_Punctuality_Statistics_Full_Analysis.parquet \
-  --table punctuality_2018 \
-  --hdfs-path /user/hue/punctuality_2018 \
+python parquet_converter.py ^
+  -i data/201801_Punctuality_Statistics_Full_Analysis.csv ^
+  -o data/201801_Punctuality_Statistics_Full_Analysis.parquet ^
+  --table punctuality_2018 ^
+  --hdfs-path /user/hue/punctuality_2018 ^
   --ddl-output data/punctuality_2018.sql
 ```
 
-默认仍然是**无压缩** Parquet —— Hue 的内置 Parquet 读取器历史上对 snappy 的支持有问题，这也是这个转换器存在的原因。
+The default is still **uncompressed** Parquet — Hue's bundled Parquet reader
+has historically choked on snappy, which is why this converter exists in the
+first place.
 
 ## Teardown
 
@@ -260,6 +302,12 @@ docker compose down -v   # also removes namenode/datanode/postgres volumes
   configs under `conf/hadoop/`.
 - Replaced `SERVICE_PRECONDITION` polling with proper `healthcheck` +
   `depends_on: condition: service_healthy`.
+- Rewrote `parquet_converter.py` as a proper CLI tool with `argparse`; it
+  now takes arbitrary CSV/Parquet paths, a Hive table name, an HDFS path,
+  and auto-generates both a `CREATE EXTERNAL TABLE` DDL and an HDFS upload
+  script. No more hand-copying column definitions into Hue.
+- Added `examples/sample_sales.csv` as a minimal reproducible dataset plus
+  pre-generated DDL and upload script for validation.
 - Fixed `parquet_converter.py` for pandas 2.x (`fname=` → `path=`).
 - Added a `platform: linux/amd64` pin and arm64 notes for Hue.
 
